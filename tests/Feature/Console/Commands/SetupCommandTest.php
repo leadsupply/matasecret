@@ -13,7 +13,6 @@ use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use Illuminate\Testing\PendingCommand;
 use Mockery;
-use Mockery\MockInterface;
 use RedisException;
 use Tests\TestCase;
 
@@ -40,12 +39,7 @@ class SetupCommandTest extends TestCase
 
     public function test_frankenphp_with_its_own_certificate_installs_octane_and_builds_for_production(): void
     {
-        $composer = $this->composer();
-        $composer->shouldReceive('requirePackages')
-            ->once()
-            ->with(['laravel/octane'], false, Mockery::type('Closure'))
-            ->andReturn(true);
-        $composer->shouldNotReceive('removePackages');
+        $this->composer();
 
         $this->artisan('setup')
             ->expectsQuestion('Which web server will run MataSecret?', 'frankenphp')
@@ -66,6 +60,8 @@ class SetupCommandTest extends TestCase
             ->expectsOutputToContain('php artisan octane:start --server=frankenphp --https --http-redirect')
             ->assertSuccessful();
 
+        $this->assertRan(['composer', 'require', 'laravel/octane', '--no-scripts', '--no-interaction']);
+        $this->assertComposerDidntRun('remove');
         $this->assertRan(['composer', 'install', '--no-dev', '--optimize-autoloader', '--no-interaction']);
         $this->assertRan(['pnpm', 'install']);
         $this->assertRan(['pnpm', 'run', 'build']);
@@ -103,11 +99,7 @@ class SetupCommandTest extends TestCase
 
     public function test_frankenphp_behind_a_reverse_proxy_listens_locally_and_trusts_the_proxy(): void
     {
-        $composer = $this->composer();
-        $composer->shouldReceive('requirePackages')
-            ->once()
-            ->with(['laravel/octane'], false, Mockery::type('Closure'))
-            ->andReturn(true);
+        $this->composer();
 
         $this->artisan('setup')
             ->expectsQuestion('Which web server will run MataSecret?', 'frankenphp')
@@ -134,6 +126,8 @@ class SetupCommandTest extends TestCase
             ->doesntExpectOutputToContain('--https')
             ->assertSuccessful();
 
+        $this->assertRan(['composer', 'require', 'laravel/octane', '--no-scripts', '--no-interaction']);
+
         $environment = $this->writtenEnvironment();
         $this->assertSame('https://secrets.example.com', $environment['APP_URL']);
         $this->assertSame('127.0.0.1', $environment['OCTANE_HOST']);
@@ -150,12 +144,7 @@ class SetupCommandTest extends TestCase
 
     public function test_okta_with_redis_and_postmark_installs_their_packages(): void
     {
-        $composer = $this->composer();
-        $composer->shouldReceive('requirePackages')
-            ->once()
-            ->with(['socialiteproviders/okta', 'symfony/postmark-mailer', 'symfony/http-client'], false, Mockery::type('Closure'))
-            ->andReturn(true);
-        $composer->shouldNotReceive('removePackages');
+        $this->composer();
         $this->redisAnswers();
 
         $this->artisan('setup')
@@ -183,6 +172,9 @@ class SetupCommandTest extends TestCase
             ->expectsOutputToContain('Redis answered.')
             ->expectsOutputToContain('https://secrets.example.com:8443/auth/callback')
             ->assertSuccessful();
+
+        $this->assertRan(['composer', 'require', 'socialiteproviders/okta', 'symfony/postmark-mailer', 'symfony/http-client', '--no-scripts', '--no-interaction']);
+        $this->assertComposerDidntRun('remove');
 
         $environment = $this->writtenEnvironment();
         $this->assertSame('https://secrets.example.com:8443', $environment['APP_URL']);
@@ -235,16 +227,14 @@ class SetupCommandTest extends TestCase
 
     public function test_removes_packages_from_a_previous_setup_that_are_no_longer_needed(): void
     {
-        $composer = $this->composer(installed: ['laravel/octane', 'socialiteproviders/okta', 'symfony/postmark-mailer', 'symfony/http-client']);
-        $composer->shouldReceive('removePackages')
-            ->once()
-            ->with(['laravel/octane', 'socialiteproviders/okta', 'symfony/http-client', 'symfony/postmark-mailer'], false, Mockery::type('Closure'))
-            ->andReturn(true);
-        $composer->shouldNotReceive('requirePackages');
+        $this->composer(installed: ['laravel/octane', 'socialiteproviders/okta', 'symfony/postmark-mailer', 'symfony/http-client']);
 
         $this->runWithGitLabAndNoMailer()
             ->expectsConfirmation('Apply this configuration?', 'yes')
             ->assertSuccessful();
+
+        $this->assertRan(['composer', 'remove', 'laravel/octane', 'socialiteproviders/okta', 'symfony/http-client', 'symfony/postmark-mailer', '--no-scripts', '--no-interaction']);
+        $this->assertComposerDidntRun('require');
 
         $this->assertSame('gitlab', $this->writtenEnvironment()['AUTH_PROVIDER']);
     }
@@ -299,21 +289,21 @@ class SetupCommandTest extends TestCase
 
     public function test_declining_the_summary_changes_nothing(): void
     {
-        $composer = $this->composer();
-        $composer->shouldNotReceive('requirePackages', 'removePackages');
+        $this->composer();
 
         $this->runWithGitLabAndNoMailer()
             ->expectsConfirmation('Apply this configuration?', 'no')
             ->expectsOutputToContain('Setup cancelled. Nothing was changed.')
             ->assertFailed();
 
+        Process::assertNothingRan();
+
         $this->assertFileDoesNotExist($this->environmentDirectory.'/.env');
     }
 
     public function test_composer_failure_leaves_the_environment_untouched(): void
     {
-        $composer = $this->composer();
-        $composer->shouldReceive('requirePackages')->once()->andReturn(false);
+        $this->composer(processes: ["*'require'*" => Process::result(exitCode: 1)]);
         $composerJson = File::get(base_path('composer.json'));
 
         $this->artisan('setup')
@@ -333,6 +323,7 @@ class SetupCommandTest extends TestCase
 
         $this->assertFileDoesNotExist($this->environmentDirectory.'/.env');
         $this->assertSame($composerJson, File::get(base_path('composer.json')));
+        $this->assertComposerDidntRun('install');
     }
 
     public function test_existing_environment_is_backed_up_with_its_permissions(): void
@@ -356,13 +347,14 @@ class SetupCommandTest extends TestCase
 
     public function test_stops_before_asking_anything_when_env_base_is_missing(): void
     {
-        $composer = $this->composer();
-        $composer->shouldNotReceive('requirePackages', 'removePackages');
+        $this->composer();
         File::delete($this->environmentDirectory.'/env.base');
 
         $this->artisan('setup')
             ->expectsOutputToContain('Setup builds .env from env.base, which is missing or unreadable')
             ->assertFailed();
+
+        Process::assertNothingRan();
 
         $this->assertFileDoesNotExist($this->environmentDirectory.'/.env');
     }
@@ -398,7 +390,7 @@ class SetupCommandTest extends TestCase
      * @param  list<string>  $installed
      * @param  array<string, ProcessResult>  $processes
      */
-    private function composer(array $installed = [], array $processes = []): MockInterface
+    private function composer(array $installed = [], array $processes = []): void
     {
         $composer = Mockery::mock(Composer::class);
         $composer->shouldReceive('hasPackage')->andReturnUsing(fn (string $package): bool => in_array($package, $installed, true));
@@ -406,8 +398,6 @@ class SetupCommandTest extends TestCase
         $this->app->instance('composer', $composer);
 
         Process::fake([...$processes, '*' => Process::result()]);
-
-        return $composer;
     }
 
     /**
@@ -416,6 +406,11 @@ class SetupCommandTest extends TestCase
     private function assertRan(array $command): void
     {
         Process::assertRan(fn (PendingProcess $process): bool => $process->command === $command && $process->path === base_path());
+    }
+
+    private function assertComposerDidntRun(string $command): void
+    {
+        Process::assertDidntRun(fn (PendingProcess $process): bool => is_array($process->command) && array_slice($process->command, 0, 2) === ['composer', $command]);
     }
 
     private function redisAnswers(bool $responds = true): void

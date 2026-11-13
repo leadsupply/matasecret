@@ -309,6 +309,10 @@ class SetupCommand extends Command
     /**
      * Add the packages the answers need and remove the ones setup added before but no
      * longer needs. On failure composer.json and composer.lock are put back.
+     *
+     * The composer.json scripts are skipped: post-update-cmd calls boost:update, which does
+     * not exist under the production .env. The production install that follows rebuilds
+     * the autoloader and the package manifest.
      */
     private function installPackages(SetupAnswers $answers): bool
     {
@@ -332,8 +336,8 @@ class SetupCommand extends Command
             $snapshot[$path] = File::exists($path) ? File::get($path) : null;
         }
 
-        $installed = ($stale === [] || $composer->removePackages($stale, output: $this->writeProcessOutput(...)))
-            && ($missing === [] || $composer->requirePackages($missing, output: $this->writeProcessOutput(...)));
+        $installed = ($stale === [] || $this->runComposer(['remove', ...$stale, '--no-scripts']))
+            && ($missing === [] || $this->runComposer(['require', ...$missing, '--no-scripts']));
 
         if (! $installed) {
             foreach ($snapshot as $path => $contents) {
@@ -351,12 +355,21 @@ class SetupCommand extends Command
      */
     private function installProductionDependencies(): bool
     {
+        return $this->runComposer(['install', '--no-dev', '--optimize-autoloader']);
+    }
+
+    /**
+     * @param  list<string>  $arguments
+     */
+    private function runComposer(array $arguments): bool
+    {
         /** @var Composer $composer */
         $composer = $this->laravel->make('composer');
 
         return Process::path(base_path())
             ->forever()
-            ->run([...$composer->findComposer(), 'install', '--no-dev', '--optimize-autoloader', '--no-interaction'], $this->writeProcessOutput(...))
+            ->env(['COMPOSER_MEMORY_LIMIT' => '-1'])
+            ->run([...$composer->findComposer(), ...$arguments, '--no-interaction'], $this->writeProcessOutput(...))
             ->successful();
     }
 
